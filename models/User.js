@@ -76,7 +76,7 @@ const UserSchema = new Schema({
             type: Date,
             default: Date.now
         },
-        countToday: {     // How many queues entered today
+        countToday: {     //  queues entered today
             type: Number,
             default: 0,
             min: 0,
