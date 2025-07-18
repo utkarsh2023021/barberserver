@@ -69,8 +69,21 @@ const UserSchema = new Schema({
             required: function() {
                 return this.subscription.status === 'trial';
             }
+        },
+
+            queueUsage: {
+        lastResetDate: {  // When we last reset the counter
+            type: Date,
+            default: Date.now
+        },
+        countToday: {     // How many queues entered today
+            type: Number,
+            default: 0,
+            min: 0,
+            max: 2
         }
     }
+}
 }, {
     timestamps: true
 });

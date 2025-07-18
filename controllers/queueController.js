@@ -48,23 +48,26 @@ module.exports = (io) => {
     };
 
     // --- Internal Helper: Emit Queue Updates via Socket.IO ---
-    const emitQueueUpdate = async (shopId) => {
-        if (!shopId) return;
-        try {
-            const updatedQueue = await Queue.find({ shop: shopId, status: { $in: ['pending', 'in-progress'] } })
-                                            .populate('barber', 'name')
-                                            .populate('userId', 'name') // Populates name if userId is present
-                                            .sort({ orderOrQueueNumber: 1 });
-            io.to(shopId.toString()).emit('queue:updated', {
-                shopId: shopId,
-                queue: updatedQueue,
-                count: updatedQueue.length
-            });
-            console.log(`Emitted queue:updated for shop ${shopId} with ${updatedQueue.length} items.`);
-        } catch (error) {
-            console.error(`Error emitting queue update for shop ${shopId}:`, error);
-        }
-    };
+const emitQueueUpdate = async (shopId) => {
+  if (!shopId) return;
+  try {
+    const updatedQueue = await Queue.find({ shop: shopId, status: { $in: ['pending', 'in-progress']} })
+                                    .populate('barber', 'name')
+                                    .populate('userId', 'name')
+                                    .sort({ orderOrQueueNumber: 1 });
+    
+    // Emit to both the shop room and individual user rooms
+    io.to(shopId.toString()).emit('queue:updated', {
+      shopId: shopId,
+      queue: updatedQueue,
+      count: updatedQueue.length
+    });
+    
+    console.log(`Emitted queue:updated for shop ${shopId} with ${updatedQueue.length} items.`);
+  } catch (error) {
+    console.error(`Error emitting queue update for shop ${shopId}:`, error);
+  }
+};
 
     // @desc    Add customer to queue
     // @route   POST /api/queue
@@ -79,8 +82,7 @@ const addToQueue = asyncHandler(async (req, res) => {
 
   // Barber and phone are always null in this flow
   const barberId = null;
- const customerPhone = req.body.customerPhone || null;
-
+  const customerPhone = req.body.customerPhone || null;
 
   console.log('Incoming payload:', JSON.stringify(req.body));
 
@@ -103,12 +105,67 @@ const addToQueue = asyncHandler(async (req, res) => {
     userIdToSave = req.user._id;
     actualCustomerName = req.user.name;
     userToNotify = req.user._id;
+
+    // Check daily queue entry limit for logged-in users
+    const user = await User.findById(userIdToSave);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // Reset counter if it's a new day
+    if (user.queueUsage?.lastResetDate < today) {
+      user.queueUsage = {
+        lastResetDate: today,
+        countToday: 0
+      };
+    }
+
+    // Initialize queueUsage if it doesn't exist
+    if (!user.queueUsage) {
+      user.queueUsage = {
+        lastResetDate: today,
+        countToday: 0
+      };
+    }
+
+    // Check if user has reached daily limit (2 entries)
+    if (user.queueUsage.countToday >= 2) {
+      throw new ApiError('You can only join 2 queues per day. Please try again tomorrow.', 400);
+    }
+
+    // Increment the counter
+    user.queueUsage.countToday += 1;
+    await user.save();
   } else if (userIdFromFrontend) {
     const userExists = await User.findById(userIdFromFrontend);
     if (userExists) {
       userIdToSave = userExists._id;
       actualCustomerName = userExists.name;
       userToNotify = userExists._id;
+
+      // Check daily queue entry limit for frontend-specified users
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+      if (userExists.queueUsage?.lastResetDate < today) {
+        userExists.queueUsage = {
+          lastResetDate: today,
+          countToday: 0
+        };
+      }
+
+      if (!userExists.queueUsage) {
+        userExists.queueUsage = {
+          lastResetDate: today,
+          countToday: 0
+        };
+      }
+
+      if (userExists.queueUsage.countToday >= 2) {
+        throw new ApiError('You can only join 2 queues per day. Please try again tomorrow.', 400);
+      }
+
+      userExists.queueUsage.countToday += 1;
+      await userExists.save();
     } else {
       if (!nameFromRequest) {
         console.error(
@@ -123,6 +180,31 @@ const addToQueue = asyncHandler(async (req, res) => {
     throw new ApiError('Customer name is required.', 400);
   }
   // If pure guest, actualCustomerName is already nameFromRequest
+
+  // Check if user is already in queue at another shop
+  if (userIdToSave) {
+    const existingQueue = await Queue.findOne({
+      userId: userIdToSave,
+      status: 'pending'
+    });
+
+    if (existingQueue) {
+      // Rollback the counter increment since we're rejecting this attempt
+      if (req.user && req.userType === 'User') {
+        const user = await User.findById(userIdToSave);
+        user.queueUsage.countToday -= 1;
+        await user.save();
+      } else if (userIdFromFrontend) {
+        const userExists = await User.findById(userIdFromFrontend);
+        if (userExists) {
+          userExists.queueUsage.countToday -= 1;
+          await userExists.save();
+        }
+      }
+      
+      throw new ApiError('You are already in queue at another shop. Please leave that queue first.', 400);
+    }
+  }
 
   // 4. Validate services array
   if (
@@ -296,10 +378,10 @@ const addWalkInToQueue = asyncHandler(async (req, res) => {
         uniqueCode = generateUniqueCode();
     } while (await Queue.findOne({ uniqueCode }));
 
-    // 7. Create the queue entry
+
     const queueEntry = await Queue.create({
         shop: shop._id,
-        barber: req.userType === 'Barber' ? req.user._id : null,
+        barber:  null,
         customerName: customerName,
         customerPhone: req.body.customerPhone || null,
         services: servicesForQueueSchema,
@@ -367,7 +449,7 @@ const removeFromQueue = asyncHandler(async (req, res, next) => {
         if (queueEntry.userId) {
             await sendPushNotification(
                 queueEntry.userId,
-                `Queue Update at ${queueEntry.shop.name}`,
+                `Update at ${queueEntry.shop.name}`,
                 `Your queue entry #${queueEntry.orderOrQueueNumber} has been cancelled.`,
                 {
                     type: 'queue_cancelled',
@@ -393,7 +475,7 @@ const removeFromQueue = asyncHandler(async (req, res, next) => {
             if (entry.userId && entry.orderOrQueueNumber !== entry._previousOrder) {
                 await sendPushNotification(
                     entry.userId,
-                    `Queue Update at ${queueEntry.shop.name}`,
+                    `Update at ${queueEntry.shop.name}`,
                     `Your new position is #${entry.orderOrQueueNumber}`,
                     {
                         type: 'queue_position_change',
@@ -519,11 +601,51 @@ const updateQueueStatus = asyncHandler(async (req, res) => {
                 totalRevenue: queueEntry.totalCost 
             }
         });
+
+
     }
 
     await queueEntry.save();
     await emitQueueUpdate(queueEntry.shop._id.toString());
     
+         const remainingQueue = await Queue.find({
+            shop: queueEntry.shop._id,
+            status: { $in: ['pending', 'in-progress'] }
+        }).sort({ orderOrQueueNumber: 1 });
+
+        for (let i = 0; i < remainingQueue.length; i++) {
+            remainingQueue[i].orderOrQueueNumber = i + 1;
+            await remainingQueue[i].save();
+        }
+             // Notify all users whose positions changed
+        for (const entry of remainingQueue) {
+            if (entry.userId && entry.orderOrQueueNumber !== entry._previousOrder) {
+                await sendPushNotification(
+                    entry.userId,
+                    `Update at ${queueEntry.shop.name}`,
+                    `Your new position is #${entry.orderOrQueueNumber}`,
+                    {
+                        type: 'queue_position_change',
+                        queueId: entry._id.toString(),
+                        newPosition: entry.orderOrQueueNumber
+                    }
+                );
+                // Also send socket notification
+                io.to(entry.userId.toString()).emit('queue:position_changed', {
+                    title: `Update at ${queueEntry.shop.name}`,
+                    message: `Your new position is #${entry.orderOrQueueNumber}`,
+                    data: {
+                        type: 'queue_position_change',
+                        queueId: entry._id.toString(),
+                        newPosition: entry.orderOrQueueNumber
+                    }
+                });
+            }
+        }
+
+        await emitQueueUpdate(queueEntry.shop._id.toString());
+
+
     res.json({ 
         success: true, 
         message: `Queue entry status updated to ${status}.`, 
@@ -659,7 +781,7 @@ const movePersonDownInQueue = asyncHandler(async (req, res) => {
         
         const shop = await Shop.findById(entry.shop);
         return {
-            title: `Queue Update at ${shop?.name || 'the shop'}`,
+            title: ` Update at ${shop?.name || 'the shop'}`,
             message: `Your position changed to #${newPosition}`,
             data: {
                 type: 'queue_position_change',
