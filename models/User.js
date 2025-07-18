@@ -69,6 +69,7 @@ const UserSchema = new Schema({
             required: function() {
                 return this.subscription.status === 'trial';
             }
+        }
         },
 
             queueUsage: {
@@ -83,7 +84,6 @@ const UserSchema = new Schema({
             max: 2
         }
     }
-}
 }, {
     timestamps: true
 });
