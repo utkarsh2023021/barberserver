@@ -47,7 +47,19 @@ photos: [{
         max: 5,
         default: 0
     },
-    
+
+    verified:{
+        type: Boolean,
+        required: false,
+        default: false
+    },
+
+    type:{
+        type: String,
+        enum: ['male', 'female', 'unisex'],
+        required: true
+    },
+
      services: [{
         name: {
             type: String,
@@ -57,6 +69,12 @@ photos: [{
             type: Number,
             required: false,
             min: 0
+        },
+        time: {
+            type: Number,
+            required: false, // Set to true if time is always required for a service
+            min: 0,
+            // default: 30 // Optional: A default time if not provided
         }
     }],
     // Barbers working at this shop (references to Barber documents)

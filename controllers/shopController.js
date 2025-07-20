@@ -16,18 +16,18 @@ const cloudinary = require('cloudinary').v2;
 
 require('dotenv').config();
 
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_5ntRaY7OFb2Rq0';
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'FdhuPV1HIA5bRYAIu2gYSoXh';
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_SECRET_KEY = process.env.RAZORPAY_SECRET_KEY;
 // IMPORTANT: Configure this URL based on your testing environment:
-// - For Android Emulator: 'https://numbr-exq6.onrender.com/api'
+// - For Android Emulator: 'http://10.0.2.2:5000/api'
 // - For iOS Simulator/Device or Physical Android Device: Replace '10.0.2.2' with your computer's actual local IP address (e.g., 'http://192.168.1.X:5000')
 // - For Production/Public access: This should be your deployed backend's public URL (e.g., 'https://api.yourdomain.com')
-const API_PUBLIC_URL = process.env.API_PUBLIC_URL || 'https://numbr-exq6.onrender.com/api'; 
+const API_PUBLIC_URL = process.env.API_PUBLIC_URL || 'http://10.0.2.2:5000/api'; 
 
 // Initialize Razorpay
 const razorpayInstance = new Razorpay({
   key_id: RAZORPAY_KEY_ID,
-  key_secret: RAZORPAY_KEY_SECRET,
+  key_secret: RAZORPAY_SECRET_KEY,
 });
 
 // UTILITY: Calculate subscription end date
@@ -50,18 +50,15 @@ const calculateEndDate = (startDate, durationValue, durationUnit) => {
 };
 
 
-// @desc    Create a new shop (by Owner)
-// @route   POST /api/shops
-// @access  Private (Owner)
 exports.createShop = asyncHandler(async (req, res) => {
 
-    console.log("Incoming shop creation body:", req.body);
+   console.log("Incoming shop creation body:", req.body);
 
-    const { name, address, photos, openingTime, closingTime } = req.body; // Owner ID comes from req.user._id
+    const { name, type, address, photos, openingTime, closingTime } = req.body; // Owner ID comes from req.user._id
 
-  // console.log("Parsed shop creation details:", { name, address, photos, openingTime, closingTime });
-    if (!name || !address || !address.fullDetails || !address.coordinates || address.coordinates.type !== 'Point' || !Array.isArray(address.coordinates.coordinates) || address.coordinates.coordinates.length !== 2) {
-        throw new ApiError('Missing required shop details (name, full address, coordinates).', 400);
+  console.log("Parsed shop creation details:", { name, address, photos, openingTime, closingTime });
+    if (!name || !type || !address || !address.fullDetails || !address.coordinates || address.coordinates.type !== 'Point' || !Array.isArray(address.coordinates.coordinates) || address.coordinates.coordinates.length !== 2) {
+        throw new ApiError('Missing required shop details (name, full address, coordinates, types).', 400);
     }
    
     if (openingTime && !/^\d{2}:\d{2}$/.test(openingTime)) {
@@ -83,6 +80,7 @@ exports.createShop = asyncHandler(async (req, res) => {
 
     const newShopData = {
         name,
+        type,
         owner: owner._id,
         address: {
             fullDetails: address.fullDetails,
@@ -116,6 +114,7 @@ exports.createShop = asyncHandler(async (req, res) => {
         data: {
             _id: newShop._id,
             name: newShop.name,
+             type: newShop.type,
             address: newShop.address,
             openingTime: newShop.openingTime,
             closingTime: newShop.closingTime,
@@ -135,7 +134,7 @@ exports.getShopById = asyncHandler(async (req, res) => {
     if (!shop) {
         throw new ApiError('Shop not found.', 404);
     }
-    //console.log("Fetched shop details:", shop);
+    console.log("Fetched shop details:", shop);
 
     // Check and update subscription status
     const now = new Date();
@@ -185,14 +184,17 @@ exports.getShopById = asyncHandler(async (req, res) => {
 // @access  Public
 exports.getAllShops = asyncHandler(async (req, res) => {
     // You can add query parameters for pagination, filtering (e.g., by location, service, rating)
-    const shops = await Shop.find({ "subscription.status": { $ne: 'expired' } }) // Only show non-expired shops
-                            .select('name address rating photos subscription.status openingTime closingTime isOpen') // Select relevant fields for listing
-                            .populate('owner', 'name'); // Optionally populate owner name
+    const shops = await Shop.find({ 
+        "subscription.status": { $ne: 'expired' },
+        "verified": true // <-- This condition is added
+    }) // Only show non-expired AND verified shops
+        .select('name address rating photos subscription.status openingTime closingTime isOpen type') // Select relevant fields for listing
+        .populate('owner', 'name'); // Optionally populate owner name
+        
     res.json({
         success: true,
         data: shops,
     });
-   
 });
 
 // @desc    Update shop details (by Owner)
@@ -200,7 +202,8 @@ exports.getAllShops = asyncHandler(async (req, res) => {
 // @access  Private (Owner)
 exports.updateShopDetails = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { name, address, photos, openingTime, closingTime, isManuallyOverridden, isOpen } = req.body; // Added isOpen
+    // 1. Destructure 'type' from the request body
+    const { name, type, address, photos, openingTime, closingTime, isManuallyOverridden, isOpen } = req.body;
 
     const shop = await Shop.findById(id);
 
@@ -214,6 +217,9 @@ exports.updateShopDetails = asyncHandler(async (req, res) => {
     }
 
     shop.name = name || shop.name;
+    // 2. Add logic to update the shop's type if a new one is provided
+    shop.type = type || shop.type; 
+    
     if (address) {
         shop.address.fullDetails = address.fullDetails || shop.address.fullDetails;
         if (address.coordinates && address.coordinates.coordinates && address.coordinates.coordinates.length === 2) {
@@ -228,7 +234,6 @@ exports.updateShopDetails = asyncHandler(async (req, res) => {
         shop.isManuallyOverridden = isManuallyOverridden;
     }
     
-    // NEW: Update isOpen field if provided and is a boolean
     if (typeof isOpen === 'boolean') {
         shop.isOpen = isOpen;
     }
@@ -294,40 +299,53 @@ exports.deleteShop = asyncHandler(async (req, res) => {
 // @route   POST /api/shops/:id/services
 // @access  Private (Owner)
 exports.addService = asyncHandler(async (req, res) => {
-    const { name, price } = req.body; // name and price are directly provided
+    const { id } = req.params;
+    // Destructure name, price, and now time from req.body
+    const { name, price, time } = req.body;
+
+    const shop = await Shop.findById(id);
+    if (!shop) {
+        throw new ApiError('Shop not found.', 404);
+    }
+
+    // Authorization
+    if (shop.owner.toString() !== req.user._id.toString()) {
+        throw new ApiError('Not authorized to modify this shop.', 403);
+    }
 
     // Validate input
-    if (!name || typeof price !== 'number' || price < 0) {
-        throw new ApiError('Service name and a valid non-negative price are required', 400);
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+        throw new ApiError('Service name is required and must be a non-empty string.', 400);
+    }
+    if (typeof price !== 'number' || price < 0) {
+        throw new ApiError('Price must be a non-negative number.', 400);
+    }
+    // Validate time if provided
+    if (time !== undefined && (typeof time !== 'number' || time < 0)) {
+        throw new ApiError('Time must be a non-negative number (in minutes).', 400);
     }
 
-    // Find shop and verify ownership
-    const shop = await Shop.findOne({
-        _id: req.params.id,
-        owner: req.user.id // Assuming req.user.id is the owner's ObjectId
-    });
-
-    if (!shop) {
-        throw new ApiError('Shop not found or not owned by you', 404);
-    }
-
-    // Check for duplicate service names (case insensitive)
+    // Check for duplicate service name within the shop's services
     const serviceExists = shop.services.some(
-        service => service.name.toLowerCase() === name.toLowerCase()
+        s => s.name.toLowerCase() === name.trim().toLowerCase()
     );
 
     if (serviceExists) {
-        throw new ApiError('This service already exists in your shop', 400);
+        throw new ApiError('A service with this name already exists in your shop', 400);
     }
 
-    // Add the new service directly as an object
-    shop.services.push({ name, price });
+    // Add the new service with name, price, and time
+    shop.services.push({ name: name.trim(), price, time }); // Include time here
+
     await shop.save();
+
+    // Respond with the newly added service item (usually the last one in the array)
+    const newServiceItem = shop.services[shop.services.length - 1];
 
     res.status(201).json({
         success: true,
-        message: 'Service added successfully',
-        data: shop.services[shop.services.length - 1] // Return the newly added service subdocument
+        message: 'Service added successfully to shop offerings.',
+        data: newServiceItem,
     });
 });
 
@@ -337,13 +355,13 @@ exports.addService = asyncHandler(async (req, res) => {
 // @access  Private (Owner)
 exports.updateShopServicePrice = asyncHandler(async (req, res) => {
     const { id, serviceItemId } = req.params;
-    const { name, price } = req.body; // Allow updating name as well
+    const { name, price, time } = req.body; // 'time' is now included in destructuring
 
     const shop = await Shop.findById(id);
     if (!shop) {
         throw new ApiError('Shop not found.', 404);
     }
-    
+
     // Authorization
     if (shop.owner.toString() !== req.user._id.toString()) {
         throw new ApiError('Not authorized to modify this shop.', 403);
@@ -372,7 +390,16 @@ exports.updateShopServicePrice = asyncHandler(async (req, res) => {
     } else if (price !== undefined) { // If price is provided but not valid
         throw new ApiError('Invalid price provided. Must be a non-negative number.', 400);
     }
-    
+
+    // Update time if provided and valid
+    // Assuming 'time' should be a number (e.g., minutes) and non-negative.
+    // Adjust validation logic if 'time' has a different expected format (e.g., string like "1 hour", or an object)
+    if (typeof time === 'number' && time >= 0) {
+        serviceItem.time = time;
+    } else if (time !== undefined) { // If time is provided but not valid
+        throw new ApiError('Invalid time provided. Must be a non-negative number.', 400);
+    }
+
     await shop.save();
 
     res.json({
@@ -604,12 +631,12 @@ exports.getShopSubscriptionStatus = asyncHandler(async (req, res) => {
 
 
 exports.serveRazorpayCheckoutPageShop = asyncHandler(async (req, res) => {
-    const { order_id, key_id, amount, currency, name, description, prefill_email, prefill_contact, theme_color, shopId } = req.query;
+    const { order_id,  amount, currency, name, description, prefill_email, prefill_contact, theme_color, shopId } = req.query;
 
-    if (!order_id || !key_id || !amount || !currency || !name || !description || !shopId) {
+    if (!order_id  || !amount || !currency || !name || !description || !shopId) {
         return res.status(400).send('Missing required parameters for checkout page.');
     }
-
+   const key_id = RAZORPAY_KEY_ID; // Use the Razorpay key ID from environment variables
     // Corrected: Add '/api' to the callback_url_base
     const callback_url_base = `${API_PUBLIC_URL}/api/shops/payment/webview-callback`; 
 
@@ -786,6 +813,7 @@ exports.createShopPaymentOrder = asyncHandler(async (req, res) => {
         if (razorpayError.error) {
             console.error("Razorpay API Error Details:", JSON.stringify(razorpayError.error, null, 2));
         }
+        
         throw new ApiError(`Razorpay order creation failed: ${razorpayError.message || 'Unknown error'}`, 500);
     }
 
@@ -816,7 +844,7 @@ exports.verifyShopPaymentAndUpdateSubscription = asyncHandler(async (req, res) =
     // // Double-check documentation if this specific string concatenation is correct for `validateWebhookSignature`.
     // // Typically, it's `validateWebhookSignature(JSON.stringify(req.body), signatureFromHeader, secret)` for webhooks.
     // // For client-side verification like this, the string `order_id + '|' + payment_id` is common.
-    // const isValidSignature = validateWebhookSignature(body_string, RAZORPAY_KEY_SECRET, razorpay_signature);
+    // const isValidSignature = validateWebhookSignature(body_string, RAZORPAY_SECRET_KEY, razorpay_signature);
     //    try {
     const {
       razorpay_payment_id,
@@ -831,7 +859,7 @@ exports.verifyShopPaymentAndUpdateSubscription = asyncHandler(async (req, res) =
     }
 
     const body_string = razorpay_order_id + '|' + razorpay_payment_id;
-    const isValidSignature = validateWebhookSignature(body_string, razorpay_signature, RAZORPAY_KEY_SECRET);
+    const isValidSignature = validateWebhookSignature(body_string, razorpay_signature, RAZORPAY_SECRET_KEY);
 
 
     if (!isValidSignature) {
@@ -839,9 +867,9 @@ exports.verifyShopPaymentAndUpdateSubscription = asyncHandler(async (req, res) =
         console.error('Payment Signature Validation Failed:');
         console.error('Expected signature (from Razorpay):', razorpay_signature);
         console.error('Calculated hash string:', body_string);
-        // IMPORTANT: In production, AVOID logging your RAZORPAY_KEY_SECRET directly for security reasons.
+        // IMPORTANT: In production, AVOID logging your RAZORPAY_SECRET_KEY directly for security reasons.
         // For debugging, it can be useful, but remove it afterward.
-        console.error('RAZORPAY_KEY_SECRET used (for debugging):', RAZORPAY_KEY_SECRET); 
+        console.error('RAZORPAY_SECRET_KEY used (for debugging):', RAZORPAY_SECRET_KEY); 
 
         throw new ApiError('Invalid payment signature.', 400);
     }
