@@ -8,7 +8,7 @@ const connectDB = require('./config/db');
 const { globalErrorHandler } = require('./utils/errorHandler');
 const runStressTest = require('./stress');
 
-require('node-fetch'); // for self-ping
+
 dotenv.config();
 
 connectDB();
@@ -142,10 +142,10 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'local'} mode on port ${PORT}`);
   
-  // Self-ping to keep server alive (useful in free hosting)
-  setInterval(() => {
-    fetch('http://localhost:' + PORT + '/ping')
-      .then(() => console.log('Pinged self!'))
-      .catch(() => console.log('Self ping failed.'));
-  }, 1000 * 60 * 10);
+  // // Self-ping to keep server alive (useful in free hosting)
+  // setInterval(() => {
+  //   fetch('http://localhost:' + PORT + '/ping')
+  //     .then(() => console.log('Pinged self!'))
+  //     .catch(() => console.log('Self ping failed.'));
+  // }, 1000 * 60 * 10);
 });
